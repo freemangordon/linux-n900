@@ -186,7 +186,7 @@ void v4l2_of_parse_csi1_bus(const struct device_node *node,
 		bus->data_lane = v;
 
 	if (!of_property_read_u32(node, "clock-lane", &v))
-		bus->data_lane = v;
+		bus->clock_lane = v;
 
 	if (bus_type == V4L2_OF_BUS_TYPE_CSI1)
 		endpoint->bus_type = V4L2_MBUS_CSI1;
