@@ -21,6 +21,7 @@
 #include <linux/mutex.h>
 #include <linux/uaccess.h>
 #include <linux/regulator/consumer.h>
+#include <linux/regmap.h>
 
 #include "isp.h"
 #include "ispreg.h"
@@ -158,6 +159,32 @@ static int ccp2_if_enable(struct isp_ccp2_device *ccp2, u8 enable)
 		ret = regulator_enable(ccp2->vdds_csib);
 		if (ret < 0)
 			return ret;
+	}
+
+	if (isp->revision == ISP_REVISION_2_0) {
+		struct media_pad *pad;
+		struct v4l2_subdev *sensor;
+		const struct isp_ccp2_cfg *buscfg;
+		u32 csirxfe;
+
+		pad = media_entity_remote_pad(&ccp2->pads[CCP2_PAD_SINK]);
+		sensor = media_entity_to_v4l2_subdev(pad->entity);
+		buscfg = &((struct isp_bus_cfg *)sensor->host_priv)->bus.ccp2;
+
+
+		if (enable) {
+			csirxfe = OMAP343X_CONTROL_CSIRXFE_PWRDNZ |
+				  OMAP343X_CONTROL_CSIRXFE_RESET;
+
+			if (buscfg->phy_layer)
+				csirxfe |= OMAP343X_CONTROL_CSIRXFE_SELFORM;
+
+			if (buscfg->strobe_clk_pol)
+				csirxfe |= OMAP343X_CONTROL_CSIRXFE_CSIB_INV;
+		} else
+			csirxfe = 0;
+
+		regmap_write(isp->syscon, isp->syscon_offset, csirxfe);
 	}
 
 	/* Enable/Disable all the LCx channels */
