@@ -38,11 +38,17 @@ enum vbs_state {
 	CSI_SWITCH_PORT_2,
 };
 
+struct vbs_src_pads {
+	struct media_entity *src;
+	int src_pad;
+};
+
 struct vbs_data {
 	struct gpio_desc *swgpio;
 	struct v4l2_subdev subdev;
 	struct v4l2_async_notifier notifier;
 	struct media_pad pads[CSI_SWITCH_PORTS];
+	struct vbs_src_pads src_pads[CSI_SWITCH_PORTS];
 	enum vbs_state state;
 };
 
@@ -124,6 +130,19 @@ static int vbs_registered(struct v4l2_subdev *sd)
 	return 0;
 }
 
+static struct v4l2_subdev *vbs_get_remote_subdev(struct v4l2_subdev *sd)
+{
+	struct vbs_data *pdata = v4l2_get_subdevdata(sd);
+	struct media_entity *src;
+
+	if (pdata->state == CSI_SWITCH_DISABLED)
+		return ERR_PTR(-ENXIO);
+
+	src = pdata->src_pads[pdata->state].src;
+
+	return media_entity_to_v4l2_subdev(src);
+}
+
 static int vbs_link_setup(struct media_entity *entity,
 			  const struct media_pad *local,
 			  const struct media_pad *remote, u32 flags)
@@ -131,10 +150,8 @@ static int vbs_link_setup(struct media_entity *entity,
 	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(entity);
 	struct vbs_data *pdata = v4l2_get_subdevdata(sd);
 	bool enable = flags & MEDIA_LNK_FL_ENABLED;
-	struct v4l2_async_subdev *asd;
-	struct vbs_async_subdev *ssd;
 
-	if (local->index > CSI_SWITCH_PORTS-1)
+	if (local->index > CSI_SWITCH_PORTS - 1)
 		return -ENXIO;
 
 	/* no configuration needed on source port */
@@ -144,6 +161,9 @@ static int vbs_link_setup(struct media_entity *entity,
 	if (!enable) {
 		if (local->index == pdata->state) {
 			pdata->state = CSI_SWITCH_DISABLED;
+
+			/* Make sure we have both cameras enabled */
+			gpiod_set_value(pdata->swgpio, 1);
 			return 0;
 		} else {
 			return -EINVAL;
@@ -154,25 +174,16 @@ static int vbs_link_setup(struct media_entity *entity,
 	if (pdata->state != CSI_SWITCH_DISABLED)
 		return -EBUSY;
 
-	switch (local->index) {
-	case 1:
-		pdata->state = CSI_SWITCH_PORT_1;
-		gpiod_set_value(pdata->swgpio, false);
+	gpiod_set_value(pdata->swgpio, local->index == CSI_SWITCH_PORT_2);
+	pdata->state = local->index;
 
-		asd = pdata->notifier.subdevs[0];
-		ssd = container_of(asd, struct vbs_async_subdev, asd);
-		pdata->subdev.ctrl_handler = ssd->sd->ctrl_handler;
-		break;
-	case 2:
-		pdata->state = CSI_SWITCH_PORT_2;
-		gpiod_set_value(pdata->swgpio, true);
+	sd = vbs_get_remote_subdev(sd);
+	if (IS_ERR(sd))
+		return PTR_ERR(sd);
 
-		asd = pdata->notifier.subdevs[1];
-		ssd = container_of(asd, struct vbs_async_subdev, asd);
-		pdata->subdev.ctrl_handler = ssd->sd->ctrl_handler;
-		break;
-	}
+	pdata->subdev.ctrl_handler = sd->ctrl_handler;
 
+	pr_err("%s %d %p\n", __func__, __LINE__, pdata->subdev.ctrl_handler);
 	return 0;
 }
 
@@ -188,7 +199,6 @@ static int vbs_subdev_notifier_bound(struct v4l2_async_notifier *async,
 	struct media_entity *src = &subdev->entity;
 	int sink_pad = ssd->port;
 	int src_pad;
-	int err;
 
 	if (sink_pad >= sink->num_pads) {
 		dev_err(pdata->subdev.dev, "no sink pad in internal entity!\n");
@@ -205,21 +215,43 @@ static int vbs_subdev_notifier_bound(struct v4l2_async_notifier *async,
 		return -EINVAL;
 	}
 
-	dev_dbg(pdata->subdev.dev, "create link: %s -> %s\n", src->name, sink->name);
-	err = media_create_pad_link(src, src_pad, sink, sink_pad, 0);
-	if (err < 0)
-		return err;
-
+	pdata->src_pads[sink_pad].src = src;
+	pdata->src_pads[sink_pad].src_pad = src_pad;
 	ssd->sd = subdev;
 
-	return err;
+	return 0;
 }
 
 static int vbs_subdev_notifier_complete(struct v4l2_async_notifier *async)
 {
 	struct vbs_data *pdata = container_of(async, struct vbs_data, notifier);
+	struct media_entity *sink = &pdata->subdev.entity;
+	int sink_pad;
+
+	for (sink_pad = 1; sink_pad < CSI_SWITCH_PORTS; sink_pad++) {
+		struct media_entity *src = pdata->src_pads[sink_pad].src;
+		int src_pad = pdata->src_pads[sink_pad].src_pad;
+		int err;
+
+		err = media_create_pad_link(src, src_pad, sink, sink_pad, 0);
+		if (err < 0)
+			return err;
+
+		dev_dbg(pdata->subdev.dev, "create link: %s[%d] -> %s[%d])\n",
+			src->name, src_pad, sink->name, sink_pad);
+	}
 
 	return v4l2_device_register_subdev_nodes(pdata->subdev.v4l2_dev);
+}
+
+static int vbs_s_stream(struct v4l2_subdev *sd, int enable)
+{
+	struct v4l2_subdev *subdev = vbs_get_remote_subdev(sd);
+
+	if (IS_ERR(subdev))
+		return PTR_ERR(subdev);
+
+	return v4l2_subdev_call(subdev, video, s_stream, enable);
 }
 
 static const struct v4l2_subdev_internal_ops vbs_internal_ops = {
@@ -231,8 +263,13 @@ static const struct media_entity_operations vbs_media_ops = {
 	.link_validate = v4l2_subdev_link_validate,
 };
 
+/* subdev video operations */
+static const struct v4l2_subdev_video_ops vbs_video_ops = {
+	.s_stream = vbs_s_stream,
+};
+
 static const struct v4l2_subdev_ops vbs_ops = {
-	/* empty, since only media entity operations are needed */
+	.video = &vbs_video_ops,
 };
 
 static int video_bus_switch_probe(struct platform_device *pdev)
