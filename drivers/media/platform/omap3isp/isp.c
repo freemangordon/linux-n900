@@ -2056,6 +2056,8 @@ static void isp_of_parse_node_csi1(struct device *dev,
 	 * sensor. Frame descriptors, perhaps?
 	 */
 	buscfg->bus.ccp2.crc = 1;
+
+	buscfg->bus.ccp2.vp_clk_pol = 1;
 }
 
 static void isp_of_parse_node_csi2(struct device *dev,
