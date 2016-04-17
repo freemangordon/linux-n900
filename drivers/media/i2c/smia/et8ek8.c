@@ -72,6 +72,7 @@ struct et8ek8_sensor {
 
 	struct v4l2_ctrl_handler ctrl_handler;
 	struct v4l2_ctrl *exposure;
+	struct v4l2_ctrl *pixel_rate;
 	struct smia_reglist *current_reglist;
 
 	u8 priv_mem[ET8EK8_PRIV_MEM_SIZE];
@@ -879,7 +880,6 @@ static int et8ek8_get_ctrl(struct v4l2_ctrl *ctrl)
 		ctrl->cur.val = mode->window_height;
 		break;
 	case V4L2_CID_MODE_PIXELCLOCK:
-	case V4L2_CID_PIXEL_RATE:
 		ctrl->cur.val = mode->pixel_clock;
 		break;
 	case V4L2_CID_MODE_SENSITIVITY:
@@ -913,6 +913,10 @@ static int et8ek8_set_ctrl(struct v4l2_ctrl *ctrl)
 
 	case V4L2_CID_TEST_PATTERN:
 		return et8ek8_set_test_pattern(sensor, ctrl->val);
+
+	case V4L2_CID_PIXEL_RATE:
+		/* For v4l2_ctrl_s_ctrl_int64() used internally. */
+		return 0;
 
 	default:
 		return -EINVAL;
@@ -1066,6 +1070,9 @@ static int et8ek8_init_controls(struct et8ek8_sensor *sensor)
 	sensor->exposure =
 		v4l2_ctrl_new_std(&sensor->ctrl_handler, &et8ek8_ctrl_ops,
 				  V4L2_CID_EXPOSURE, min, max, min, max);
+	sensor->pixel_rate =
+		v4l2_ctrl_new_std(&sensor->ctrl_handler, &et8ek8_ctrl_ops,
+		V4L2_CID_PIXEL_RATE, 1, INT_MAX, 1, 1);
 
 	/* V4L2_CID_TEST_PATTERN and V4L2_CID_MODE_* */
 	for (i = 0; i < ARRAY_SIZE(et8ek8_ctrls); ++i)
@@ -1095,6 +1102,8 @@ static void et8ek8_update_controls(struct et8ek8_sensor *sensor)
 	ctrl->default_value = max;
 	ctrl->val = max;
 	ctrl->cur.val = max;
+	__v4l2_ctrl_s_ctrl_int64(sensor->pixel_rate,
+				 sensor->current_reglist->mode.ext_clock);
 	v4l2_ctrl_unlock(ctrl);
 }
 
