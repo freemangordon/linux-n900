@@ -184,7 +184,6 @@
 		module {
 			model = "TCM8341MD";
 			sensor = <&cam1>;
-			focus = <&autofocus>;
 		};
 	};
 
