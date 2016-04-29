@@ -230,6 +230,19 @@
 			};
 		};
 	};
+
+	pwm9: dmtimer-pwm@9 {
+		compatible = "ti,omap-dmtimer-pwm";
+		ti,timers = <&timer9>;
+		ti,clock-source = <0>; /* OMAP_TIMER_SRC_SYS_CLK */
+		#pwm-cells = <3>;
+	};
+
+	ir: lirc-rx51 {
+		compatible = "nokia,lirc-rx51";
+
+		pwms = <&pwm9 0 26316 0>; /* 38000 Hz */
+	};
 };
 
 &isp {

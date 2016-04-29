@@ -18,7 +18,7 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  */
-
+#define DEBUG
 #include <linux/clk.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
@@ -27,6 +27,7 @@
 #include <linux/sched.h>
 #include <linux/wait.h>
 #include <linux/of.h>
+#include <linux/pwm.h>
 
 #include <media/lirc.h>
 #include <media/lirc_dev.h>
@@ -44,7 +45,7 @@
 #define TIMER_MAX_VALUE 0xffffffff
 
 struct lirc_rx51 {
-	pwm_omap_dmtimer *pwm_timer;
+	struct pwm_device *pwm;
 	pwm_omap_dmtimer *pulse_timer;
 	struct pwm_omap_dmtimer_pdata *dmtimer;
 	struct device	     *dev;
@@ -59,32 +60,28 @@ struct lirc_rx51 {
 	int		wbuf[WBUF_LEN];
 	int		wbuf_index;
 	unsigned long	device_is_open;
-	int		pwm_timer_num;
 };
 
 static void lirc_rx51_on(struct lirc_rx51 *lirc_rx51)
 {
-	lirc_rx51->dmtimer->set_pwm(lirc_rx51->pwm_timer, 0, 1,
-				PWM_OMAP_DMTIMER_TRIGGER_OVERFLOW_AND_COMPARE);
+	pwm_enable(lirc_rx51->pwm);
 }
 
 static void lirc_rx51_off(struct lirc_rx51 *lirc_rx51)
 {
-	lirc_rx51->dmtimer->set_pwm(lirc_rx51->pwm_timer, 0, 1,
-				    PWM_OMAP_DMTIMER_TRIGGER_NONE);
+	pwm_disable(lirc_rx51->pwm);
 }
 
 static int init_timing_params(struct lirc_rx51 *lirc_rx51)
 {
-	u32 load, match;
+	struct pwm_device *pwm = lirc_rx51->pwm;
+	int duty, period = DIV_ROUND_CLOSEST(NSEC_PER_SEC, lirc_rx51->freq);
 
-	load = -(lirc_rx51->fclk_khz * 1000 / lirc_rx51->freq);
-	match = -(lirc_rx51->duty_cycle * -load / 100);
-	lirc_rx51->dmtimer->set_load(lirc_rx51->pwm_timer, 1, load);
-	lirc_rx51->dmtimer->set_match(lirc_rx51->pwm_timer, 1, match);
-	lirc_rx51->dmtimer->write_counter(lirc_rx51->pwm_timer, TIMER_MAX_VALUE - 2);
-	lirc_rx51->dmtimer->start(lirc_rx51->pwm_timer);
+	duty = DIV_ROUND_CLOSEST(lirc_rx51->duty_cycle * period, 100);
 	lirc_rx51->dmtimer->set_int_enable(lirc_rx51->pulse_timer, 0);
+
+	pwm_config(pwm, duty, period);
+
 	lirc_rx51->dmtimer->start(lirc_rx51->pulse_timer);
 
 	lirc_rx51->match = 0;
@@ -166,7 +163,7 @@ end:
 	/* Stop TX here */
 	lirc_rx51_off(lirc_rx51);
 	lirc_rx51->wbuf_index = -1;
-	lirc_rx51->dmtimer->stop(lirc_rx51->pwm_timer);
+
 	lirc_rx51->dmtimer->stop(lirc_rx51->pulse_timer);
 	lirc_rx51->dmtimer->set_int_enable(lirc_rx51->pulse_timer, 0);
 	wake_up_interruptible(&lirc_rx51->wqueue);
@@ -174,49 +171,10 @@ end:
 	return IRQ_HANDLED;
 }
 
-static int lirc_rx51_init_port_of(struct lirc_rx51 *lirc_rx51)
-{
-	struct device_node *np = lirc_rx51->dev->of_node;
-	struct device_node *timer;
-
-	timer = of_parse_phandle(np, "ti,timers", 0);
-	if (!timer)
-		return -ENODEV;
-
-	if (!of_get_property(timer, "ti,timer-pwm", NULL)) {
-		dev_err(lirc_rx51->dev, "Missing ti,timer-pwm capability\n");
-		return -ENODEV;
-	}
-
-	lirc_rx51->pwm_timer = lirc_rx51->dmtimer->request_by_node(timer);
-
-	if (IS_ERR(lirc_rx51->pwm_timer))
-		return PTR_ERR(lirc_rx51->pwm_timer);
-
-	return 0;
-}
-
 static int lirc_rx51_init_port(struct lirc_rx51 *lirc_rx51)
 {
 	struct clk *clk_fclk;
-	int retval, pwm_timer = lirc_rx51->pwm_timer_num;
-
-	if (lirc_rx51->dev->of_node) {
-		retval = lirc_rx51_init_port_of(lirc_rx51);
-		if (retval) {
-			dev_err(lirc_rx51->dev,
-				": Error requesting GPT timer\n");
-		}
-	}
-	else {
-		lirc_rx51->pwm_timer =
-				lirc_rx51->dmtimer->request_specific(pwm_timer);
-		if (lirc_rx51->pwm_timer == NULL) {
-			dev_err(lirc_rx51->dev,
-				": Error requesting GPT%d timer\n", pwm_timer);
-			return -EBUSY;
-		}
-	}
+	int retval;
 
 	lirc_rx51->pulse_timer = lirc_rx51->dmtimer->request();
 	if (lirc_rx51->pulse_timer == NULL) {
@@ -225,12 +183,9 @@ static int lirc_rx51_init_port(struct lirc_rx51 *lirc_rx51)
 		goto err1;
 	}
 
-	lirc_rx51->dmtimer->set_source(lirc_rx51->pwm_timer,
-				       PWM_OMAP_DMTIMER_SRC_SYS_CLK);
 	lirc_rx51->dmtimer->set_source(lirc_rx51->pulse_timer,
 				       PWM_OMAP_DMTIMER_SRC_SYS_CLK);
 
-	lirc_rx51->dmtimer->enable(lirc_rx51->pwm_timer);
 	lirc_rx51->dmtimer->enable(lirc_rx51->pulse_timer);
 
 	lirc_rx51->irq_num = lirc_rx51->dmtimer->get_irq(lirc_rx51->pulse_timer);
@@ -241,7 +196,7 @@ static int lirc_rx51_init_port(struct lirc_rx51 *lirc_rx51)
 		goto err2;
 	}
 
-	clk_fclk = lirc_rx51->dmtimer->get_fclk(lirc_rx51->pwm_timer);
+	clk_fclk = lirc_rx51->dmtimer->get_fclk(lirc_rx51->pulse_timer);
 	lirc_rx51->fclk_khz = clk_get_rate(clk_fclk) / 1000;
 
 	return 0;
@@ -249,8 +204,6 @@ static int lirc_rx51_init_port(struct lirc_rx51 *lirc_rx51)
 err2:
 	lirc_rx51->dmtimer->free(lirc_rx51->pulse_timer);
 err1:
-	lirc_rx51->dmtimer->free(lirc_rx51->pwm_timer);
-
 	return retval;
 }
 
@@ -259,9 +212,7 @@ static int lirc_rx51_free_port(struct lirc_rx51 *lirc_rx51)
 	lirc_rx51->dmtimer->set_int_enable(lirc_rx51->pulse_timer, 0);
 	free_irq(lirc_rx51->irq_num, lirc_rx51);
 	lirc_rx51_off(lirc_rx51);
-	lirc_rx51->dmtimer->disable(lirc_rx51->pwm_timer);
 	lirc_rx51->dmtimer->disable(lirc_rx51->pulse_timer);
-	lirc_rx51->dmtimer->free(lirc_rx51->pwm_timer);
 	lirc_rx51->dmtimer->free(lirc_rx51->pulse_timer);
 	lirc_rx51->wbuf_index = -1;
 
@@ -420,7 +371,6 @@ static int lirc_rx51_release(struct inode *inode, struct file *file)
 }
 
 static struct lirc_rx51 lirc_rx51 = {
-	.freq		= 38000,
 	.duty_cycle	= 50,
 	.wbuf_index	= -1,
 };
@@ -478,6 +428,8 @@ static int lirc_rx51_resume(struct platform_device *dev)
 
 static int lirc_rx51_probe(struct platform_device *dev)
 {
+	struct pwm_device *pwm;
+
 	lirc_rx51_driver.features = LIRC_RX51_DRIVER_FEATURES;
 	lirc_rx51.pdata = dev->dev.platform_data;
 
@@ -491,9 +443,17 @@ static int lirc_rx51_probe(struct platform_device *dev)
 		return -ENODEV;
 	}
 
-	if (!dev->dev.of_node)
-		lirc_rx51.pwm_timer_num = lirc_rx51.pdata->pwm_timer;
+	pwm = devm_of_pwm_get(&dev->dev, dev->dev.of_node, NULL);
+	if (IS_ERR(pwm)) {
+		int err = PTR_ERR(pwm);
 
+		dev_err(&dev->dev, ": devm_of_pwm_get failed: %d\n", err);
+		return err;
+	}
+
+
+	lirc_rx51.freq = DIV_ROUND_CLOSEST(pwm_get_period(pwm), NSEC_PER_SEC);
+	lirc_rx51.pwm = pwm;
 	lirc_rx51.dmtimer = lirc_rx51.pdata->dmtimer;
 	lirc_rx51.dev = &dev->dev;
 	lirc_rx51_driver.dev = &dev->dev;
@@ -505,8 +465,6 @@ static int lirc_rx51_probe(struct platform_device *dev)
 		       lirc_rx51_driver.minor);
 		return lirc_rx51_driver.minor;
 	}
-	dev_info(lirc_rx51.dev, "registration ok, minor: %d, pwm: %d\n",
-		 lirc_rx51_driver.minor, lirc_rx51.pwm_timer_num);
 
 	return 0;
 }
