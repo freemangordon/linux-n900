@@ -114,6 +114,7 @@ struct omap_dm_timer {
 	unsigned long rate;
 	unsigned reserved:1;
 	unsigned posted:1;
+	unsigned enabled;
 	struct timer_regs context;
 	int (*get_context_loss_count)(struct device *);
 	int ctx_loss_count;

@@ -365,6 +365,9 @@ void omap_dm_timer_enable(struct omap_dm_timer *timer)
 {
 	int c;
 
+	if (timer->enabled++)
+		return;
+
 	pm_runtime_get_sync(&timer->pdev->dev);
 
 	if (!(timer->capability & OMAP_TIMER_ALWON)) {
@@ -383,7 +386,11 @@ EXPORT_SYMBOL_GPL(omap_dm_timer_enable);
 
 void omap_dm_timer_disable(struct omap_dm_timer *timer)
 {
-	pm_runtime_put_sync(&timer->pdev->dev);
+	if (timer->enabled == 1)
+		pm_runtime_put_sync(&timer->pdev->dev);
+
+	if (timer->enabled)
+		timer->enabled--;
 }
 EXPORT_SYMBOL_GPL(omap_dm_timer_disable);
 
