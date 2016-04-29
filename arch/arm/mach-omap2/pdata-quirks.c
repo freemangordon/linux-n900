@@ -418,8 +418,6 @@ static void __init rx51_add_gpio_switches(void)
 }
 #endif /* CONFIG_OMAP_GPIO_SWITCH || CONFIG_OMAP_GPIO_SWITCH_MODULE */
 
-static struct platform_device rx51_lirc_device;
-
 static void __init nokia_n900_legacy_init(void)
 {
 	hsmmc2_internal_input_clk();
@@ -440,10 +438,7 @@ static void __init nokia_n900_legacy_init(void)
 
 		pr_info("RX-51: Registering OMAP3 HWRNG device\n");
 		platform_device_register(&omap3_rom_rng_device);
-
 	}
-
-	platform_device_register(&rx51_lirc_device);
 }
 
 static void __init omap3_tao3530_legacy_init(void)
@@ -644,14 +639,6 @@ static struct lirc_rx51_platform_data __maybe_unused rx51_lirc_data = {
 #endif
 };
 
-static struct platform_device rx51_lirc_device = {
-	.name           = "lirc_rx51",
-	.id             = -1,
-	.dev            = {
-		.platform_data = &rx51_lirc_data,
-	},
-};
-
 /*
  * Few boards still need auxdata populated before we populate
  * the dev entries in of_platform_populate().
@@ -745,6 +732,7 @@ static struct of_dev_auxdata omap_auxdata_lookup[] __initdata = {
 		       &omap3_iommu_pdata),
 	OF_DEV_AUXDATA("ti,omap3-hsmmc", 0x4809c000, "4809c000.mmc", &mmc_pdata[0]),
 	OF_DEV_AUXDATA("ti,omap3-hsmmc", 0x480b4000, "480b4000.mmc", &mmc_pdata[1]),
+	OF_DEV_AUXDATA("nokia,lirc-rx51", 0, "lirc-rx51", &rx51_lirc_data),
 	/* Only on am3517 */
 	OF_DEV_AUXDATA("ti,davinci_mdio", 0x5c030000, "davinci_mdio.0", NULL),
 	OF_DEV_AUXDATA("ti,am3517-emac", 0x5c000000, "davinci_emac.0",

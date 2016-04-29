@@ -26,6 +26,7 @@
 #include <linux/platform_device.h>
 #include <linux/sched.h>
 #include <linux/wait.h>
+#include <linux/of.h>
 
 #include <media/lirc.h>
 #include <media/lirc_dev.h>
@@ -173,16 +174,48 @@ end:
 	return IRQ_HANDLED;
 }
 
+static int lirc_rx51_init_port_of(struct lirc_rx51 *lirc_rx51)
+{
+	struct device_node *np = lirc_rx51->dev->of_node;
+	struct device_node *timer;
+
+	timer = of_parse_phandle(np, "ti,timers", 0);
+	if (!timer)
+		return -ENODEV;
+
+	if (!of_get_property(timer, "ti,timer-pwm", NULL)) {
+		dev_err(lirc_rx51->dev, "Missing ti,timer-pwm capability\n");
+		return -ENODEV;
+	}
+
+	lirc_rx51->pwm_timer = lirc_rx51->dmtimer->request_by_node(timer);
+
+	if (IS_ERR(lirc_rx51->pwm_timer))
+		return PTR_ERR(lirc_rx51->pwm_timer);
+
+	return 0;
+}
+
 static int lirc_rx51_init_port(struct lirc_rx51 *lirc_rx51)
 {
 	struct clk *clk_fclk;
 	int retval, pwm_timer = lirc_rx51->pwm_timer_num;
 
-	lirc_rx51->pwm_timer = lirc_rx51->dmtimer->request_specific(pwm_timer);
-	if (lirc_rx51->pwm_timer == NULL) {
-		dev_err(lirc_rx51->dev, ": Error requesting GPT%d timer\n",
-			pwm_timer);
-		return -EBUSY;
+	if (lirc_rx51->dev->of_node) {
+		retval = lirc_rx51_init_port_of(lirc_rx51);
+		if (retval) {
+			dev_err(lirc_rx51->dev,
+				": Error requesting GPT timer\n");
+		}
+	}
+	else {
+		lirc_rx51->pwm_timer =
+				lirc_rx51->dmtimer->request_specific(pwm_timer);
+		if (lirc_rx51->pwm_timer == NULL) {
+			dev_err(lirc_rx51->dev,
+				": Error requesting GPT%d timer\n", pwm_timer);
+			return -EBUSY;
+		}
 	}
 
 	lirc_rx51->pulse_timer = lirc_rx51->dmtimer->request();
@@ -447,12 +480,20 @@ static int lirc_rx51_probe(struct platform_device *dev)
 {
 	lirc_rx51_driver.features = LIRC_RX51_DRIVER_FEATURES;
 	lirc_rx51.pdata = dev->dev.platform_data;
+
+	if (!lirc_rx51.pdata) {
+		dev_err(&dev->dev, "Platform Data is missing\n");
+		return -ENXIO;
+	}
+
 	if (!lirc_rx51.pdata->dmtimer) {
 		dev_err(&dev->dev, "no dmtimer?\n");
 		return -ENODEV;
 	}
 
-	lirc_rx51.pwm_timer_num = lirc_rx51.pdata->pwm_timer;
+	if (!dev->dev.of_node)
+		lirc_rx51.pwm_timer_num = lirc_rx51.pdata->pwm_timer;
+
 	lirc_rx51.dmtimer = lirc_rx51.pdata->dmtimer;
 	lirc_rx51.dev = &dev->dev;
 	lirc_rx51_driver.dev = &dev->dev;
@@ -475,6 +516,14 @@ static int lirc_rx51_remove(struct platform_device *dev)
 	return lirc_unregister_driver(lirc_rx51_driver.minor);
 }
 
+static const struct of_device_id lirc_rx51_match[] = {
+	{
+		.compatible = "nokia,lirc-rx51",
+	},
+	{},
+};
+MODULE_DEVICE_TABLE(of, lirc_rx51_match);
+
 struct platform_driver lirc_rx51_platform_driver = {
 	.probe		= lirc_rx51_probe,
 	.remove		= lirc_rx51_remove,
@@ -482,7 +531,7 @@ struct platform_driver lirc_rx51_platform_driver = {
 	.resume		= lirc_rx51_resume,
 	.driver		= {
 		.name	= DRIVER_NAME,
-		.owner	= THIS_MODULE,
+		.of_match_table = of_match_ptr(lirc_rx51_match),
 	},
 };
 module_platform_driver(lirc_rx51_platform_driver);
